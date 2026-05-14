@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lexisearch"
+version = "0.1.0"
+description = "A blazing fast, fuzzy-search enabled English dictionary TUI."
+readme = "README.md"
+authors = [
+    { name = "Open Source Contributor" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = [
+    "textual>=0.82.0",
+    "rapidfuzz>=3.0.0"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console :: Curses",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/LexiSearch"
+Documentation = "https://github.com/yourusername/LexiSearch/tree/main/docs"
+
+[project.scripts]
+lexisearch = "lexisearch.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lexisearch"]
+package-data = {"src/lexisearch/data" = ["*.db"]}
