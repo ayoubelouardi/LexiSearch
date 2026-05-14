@@ -1,0 +1,18 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.1] - 2026-05-14
+
+### Added
+- **Vim Navigation**: Added support for Vim-style shortcuts (`j`, `k`, `h`, `l`, `gg`, `G`) in a new "Normal Mode".
+- **Insert/Normal Mode Paradigm**: Pressing `Escape` enters Normal Mode for navigation. Pressing `/` enters Insert Mode to type in the search bar.
+- **Help Modal**: Added an interactive help screen triggered by `?` in Normal Mode to display all active shortcuts.
+- **Search Shortcuts**: Added `Ctrl+Backspace` (Ctrl+H) to instantly clear the search bar, and `Enter` to instantly highlight the first word result.
+- **Changelog**: Added `CHANGELOG.md` to track project evolution.
+
+### Removed
+- **Legacy Formats**: Removed the `legacy_data/` directory (CSV and MySQL dumps) to strictly focus the repository on the Python TUI application and its highly optimized SQLite backend.

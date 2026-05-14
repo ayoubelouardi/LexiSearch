@@ -1,16 +1,70 @@
 import sqlite3
-import functools
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Dict
 
 from rapidfuzz import process, fuzz
-from textual import work
+from textual import work, events
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Input, Static, OptionList, Footer
+from textual.containers import Horizontal, Vertical, Center
+from textual.screen import ModalScreen
+from textual.widgets import Header, Input, Static, OptionList, Footer, Markdown
+from textual.binding import Binding
 
 # Database configuration
 DB_PATH = Path(__file__).parent / "data" / "dictionary.db"
+
+class HelpScreen(ModalScreen):
+    """Screen with a dialog to show help and shortcuts."""
+
+    CSS = """
+    HelpScreen {
+        align: center middle;
+        background: $background 80%;
+    }
+
+    #help_dialog {
+        padding: 1 2;
+        width: 60%;
+        height: 80%;
+        border: thick $primary;
+        background: $surface;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+        ("?", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        help_markdown = """
+# LexiSearch Shortcuts
+
+| Key(s) | Action | Mode |
+|---|---|---|
+| `/` | Focus Search Bar | Any |
+| `Escape` | Unfocus Search (Enter Normal Mode) | Any |
+| `Ctrl+Backspace` | Clear Search Bar | Any |
+| `Enter` | Select First Word | Search Focused |
+| `?` | Toggle Help | Normal |
+| `q` | Quit Application | Normal |
+| `Ctrl+c` | Quit Application | Any |
+
+## Normal Mode Navigation (Vim Style)
+*(Press `Escape` to enter Normal Mode)*
+
+| Key | Action |
+|---|---|
+| `j` | Move / Scroll Down |
+| `k` | Move / Scroll Up |
+| `h` | Focus Word List (Left) |
+| `l` | Focus Definition (Right) |
+| `gg` | Jump to Top |
+| `G` | Jump to Bottom |
+        """
+        with Vertical(id="help_dialog"):
+            yield Markdown(help_markdown)
 
 class DictionaryTUI(App):
     """A high-performance dictionary search application."""
@@ -35,12 +89,20 @@ class DictionaryTUI(App):
         height: 1fr;
         border-right: tall $primary;
     }
+    
+    #word_list:focus {
+        border-right: tall $accent;
+    }
 
     #definition_panel {
         width: 70%;
         height: 1fr;
         padding: 1 2;
         overflow-y: scroll;
+    }
+    
+    #definition_panel:focus {
+        background: $surface-lighten-1;
     }
 
     .word-title {
@@ -63,9 +125,11 @@ class DictionaryTUI(App):
     """
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("ctrl+c", "quit", "Quit"),
-        ("escape", "focus_search", "Search"),
+        Binding("ctrl+c", "quit", "Quit"),
+        Binding("escape", "unfocus_search", "Normal Mode", show=True),
+        Binding("/", "focus_search", "Search"),
+        Binding("ctrl+h", "clear_search", "Clear"), # Ctrl+Backspace maps to ctrl+h in many terminals
+        Binding("?", "show_help", "Help"),
     ]
 
     def __init__(self, **kwargs):
@@ -73,6 +137,7 @@ class DictionaryTUI(App):
         self.words: List[str] = []
         self.db_conn = None
         self._search_cache: Dict[str, list] = {}
+        self._last_g_press = 0
 
     def on_mount(self) -> None:
         """Initialize database connection and load word list."""
@@ -98,12 +163,27 @@ class DictionaryTUI(App):
             yield Input(placeholder="Type to search (fuzzy)...", id="search_input")
         with Horizontal(id="main_container"):
             yield OptionList(id="word_list")
-            yield Static(id="definition_panel")
+            yield Static(id="definition_panel", can_focus=True)
         yield Footer()
 
     def action_focus_search(self) -> None:
         """Focus the search input."""
         self.query_one(Input).focus()
+        
+    def action_unfocus_search(self) -> None:
+        """Drop focus from search to enter normal mode."""
+        self.query_one(OptionList).focus()
+
+    def action_clear_search(self) -> None:
+        """Clear the search input."""
+        inp = self.query_one(Input)
+        inp.value = ""
+        inp.focus()
+        
+    def action_show_help(self) -> None:
+        """Show the help screen."""
+        if not self.query_one(Input).has_focus:
+            self.push_screen(HelpScreen())
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         """Handle live search as the user types."""
@@ -112,6 +192,59 @@ class DictionaryTUI(App):
             self.perform_fuzzy_search(search_term)
         else:
             self.query_one(OptionList).clear_options()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in the search bar."""
+        option_list = self.query_one(OptionList)
+        if option_list.option_count > 0:
+            option_list.focus()
+            option_list.highlighted = 0
+            
+    def on_key(self, event: events.Key) -> None:
+        """Handle Vim-style navigation in Normal mode."""
+        if self.query_one(Input).has_focus:
+            return # Let the input handle its own keys
+            
+        key = event.character
+        if not key:
+            return
+            
+        word_list = self.query_one(OptionList)
+        def_panel = self.query_one("#definition_panel")
+        
+        if key == "q":
+            self.exit()
+        elif key == "h":
+            word_list.focus()
+        elif key == "l":
+            def_panel.focus()
+        elif key == "j":
+            if word_list.has_focus:
+                word_list.action_cursor_down()
+            elif def_panel.has_focus:
+                def_panel.scroll_down(animate=False)
+        elif key == "k":
+            if word_list.has_focus:
+                word_list.action_cursor_up()
+            elif def_panel.has_focus:
+                def_panel.scroll_up(animate=False)
+        elif key == "G":
+            if word_list.has_focus and word_list.option_count > 0:
+                word_list.highlighted = word_list.option_count - 1
+            elif def_panel.has_focus:
+                def_panel.scroll_to(y=def_panel.max_scroll_y, animate=False)
+        elif key == "g":
+            import time
+            current_time = time.time()
+            if current_time - self._last_g_press < 0.5:
+                # Double 'g' pressed
+                if word_list.has_focus and word_list.option_count > 0:
+                    word_list.highlighted = 0
+                elif def_panel.has_focus:
+                    def_panel.scroll_home(animate=False)
+                self._last_g_press = 0
+            else:
+                self._last_g_press = current_time
 
     @work(exclusive=True, thread=True)
     async def perform_fuzzy_search(self, search_term: str) -> None:
