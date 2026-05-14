@@ -1,17 +1,27 @@
+"""LexiSearch TUI Application."""
+
 import sqlite3
+import sys
+import time
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
-from rapidfuzz import process, fuzz
-from textual import work, events
+from rapidfuzz import fuzz, process
+from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, Center
-from textual.screen import ModalScreen
-from textual.widgets import Header, Input, Static, OptionList, Footer, Markdown
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Header, Input, Markdown, OptionList, Static
 
-# Database configuration
-DB_PATH = Path(__file__).parent / "data" / "dictionary.db"
+# Database configuration: handle PyInstaller path if frozen
+if getattr(sys, "frozen", False):
+    # Running as compiled binary
+    DB_PATH = Path(sys._MEIPASS) / "lexisearch" / "data" / "dictionary.db"  # type: ignore
+else:
+    # Running in normal Python environment
+    DB_PATH = Path(__file__).parent / "data" / "dictionary.db"
+
 
 class HelpScreen(ModalScreen):
     """Screen with a dialog to show help and shortcuts."""
@@ -66,9 +76,10 @@ class HelpScreen(ModalScreen):
         with Vertical(id="help_dialog"):
             yield Markdown(help_markdown)
 
+
 class DictionaryTUI(App):
     """A high-performance dictionary search application."""
-    
+
     CSS = """
     Screen {
         background: $surface;
@@ -128,7 +139,9 @@ class DictionaryTUI(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("escape", "unfocus_search", "Normal Mode", show=True),
         Binding("/", "focus_search", "Search"),
-        Binding("ctrl+h", "clear_search", "Clear"), # Ctrl+Backspace maps to ctrl+h in many terminals
+        Binding(
+            "ctrl+h", "clear_search", "Clear"
+        ),  # Ctrl+Backspace maps to ctrl+h in many terminals
         Binding("?", "show_help", "Help"),
     ]
 
@@ -163,13 +176,15 @@ class DictionaryTUI(App):
             yield Input(placeholder="Type to search (fuzzy)...", id="search_input")
         with Horizontal(id="main_container"):
             yield OptionList(id="word_list")
-            yield Static(id="definition_panel", can_focus=True)
+            def_panel = Static(id="definition_panel")
+            def_panel.can_focus = True
+            yield def_panel
         yield Footer()
 
     def action_focus_search(self) -> None:
         """Focus the search input."""
         self.query_one(Input).focus()
-        
+
     def action_unfocus_search(self) -> None:
         """Drop focus from search to enter normal mode."""
         self.query_one(OptionList).focus()
@@ -179,7 +194,7 @@ class DictionaryTUI(App):
         inp = self.query_one(Input)
         inp.value = ""
         inp.focus()
-        
+
     def action_show_help(self) -> None:
         """Show the help screen."""
         if not self.query_one(Input).has_focus:
@@ -195,23 +210,24 @@ class DictionaryTUI(App):
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in the search bar."""
+        _ = event
         option_list = self.query_one(OptionList)
         if option_list.option_count > 0:
             option_list.focus()
             option_list.highlighted = 0
-            
+
     def on_key(self, event: events.Key) -> None:
         """Handle Vim-style navigation in Normal mode."""
         if self.query_one(Input).has_focus:
-            return # Let the input handle its own keys
-            
+            return  # Let the input handle its own keys
+
         key = event.character
         if not key:
             return
-            
+
         word_list = self.query_one(OptionList)
         def_panel = self.query_one("#definition_panel")
-        
+
         if key == "q":
             self.exit()
         elif key == "h":
@@ -234,7 +250,6 @@ class DictionaryTUI(App):
             elif def_panel.has_focus:
                 def_panel.scroll_to(y=def_panel.max_scroll_y, animate=False)
         elif key == "g":
-            import time
             current_time = time.time()
             if current_time - self._last_g_press < 0.5:
                 # Double 'g' pressed
@@ -280,13 +295,13 @@ class DictionaryTUI(App):
             # Tier 4: Fallback to fuzzy search if we need more results (typographic errors)
             if len(matches) < limit:
                 fuzzy_matches = process.extract(
-                    search_term, 
-                    self.words, 
-                    scorer=fuzz.WRatio, 
-                    limit=limit, 
-                    score_cutoff=75
+                    search_term,
+                    self.words,
+                    scorer=fuzz.WRatio,
+                    limit=limit,
+                    score_cutoff=75,
                 )
-                for fw, score, idx in fuzzy_matches:
+                for fw, _score, _idx in fuzzy_matches:
                     if fw not in seen:
                         matches.append(fw)
                         seen.add(fw)
@@ -296,7 +311,7 @@ class DictionaryTUI(App):
             self._search_cache[search_term] = matches
             if len(self._search_cache) > 200:
                 self._search_cache.clear()
-        
+
         # Verify the search term hasn't changed before updating UI
         if self.query_one(Input).value.strip().lower() != search_term:
             return
@@ -310,7 +325,9 @@ class DictionaryTUI(App):
         for word in matches:
             option_list.add_option(word)
 
-    async def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+    async def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
         """Fetch and display definition when a word is highlighted."""
         if event.option:
             word = str(event.option.prompt)
@@ -325,24 +342,29 @@ class DictionaryTUI(App):
         cursor = self.db_conn.cursor()
         # Fetch all definitions for this word to avoid duplicates in matching but show all meanings
         cursor.execute(
-            "SELECT word, wordtype, definition FROM entries WHERE word = ?", 
-            (word,)
+            "SELECT word, wordtype, definition FROM entries WHERE word = ?", (word,)
         )
         results = cursor.fetchall()
 
         if results:
             content = f"[b underline $accent]{word.upper()}[/]\n\n"
-            for i, (w, t, d) in enumerate(results, 1):
+            for i, (_w, t, d) in enumerate(results, 1):
                 content += f"[b]{i}.[/] [i $secondary]{t}[/] {d}\n\n"
-            
-            self.app.call_from_thread(self.query_one("#definition_panel", Static).update, content)
+
+            self.app.call_from_thread(
+                self.query_one("#definition_panel", Static).update, content
+            )
         else:
-            self.app.call_from_thread(self.query_one("#definition_panel", Static).update, "Definition not found.")
+            self.app.call_from_thread(
+                self.query_one("#definition_panel", Static).update,
+                "Definition not found.",
+            )
 
     def on_unmount(self) -> None:
         """Close database connection on exit."""
         if self.db_conn:
             self.db_conn.close()
+
 
 if __name__ == "__main__":
     app = DictionaryTUI()
