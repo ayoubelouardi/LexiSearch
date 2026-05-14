@@ -115,26 +115,52 @@ class DictionaryTUI(App):
 
     @work(exclusive=True, thread=True)
     async def perform_fuzzy_search(self, search_term: str) -> None:
-        """Perform optimized fuzzy search using RapidFuzz."""
+        """Perform a tiered hybrid search for optimal relevance and speed."""
         if search_term in self._search_cache:
             matches = self._search_cache[search_term]
         else:
-            # Speed optimization: 
-            # 1. Use fuzz.QRatio (faster than WRatio for short queries)
-            # 2. Use thread=True to avoid blocking the event loop
-            # 3. Limit processing for very short strings
-            
-            scorer = fuzz.QRatio if len(search_term) < 4 else fuzz.WRatio
-            
-            matches = process.extract(
-                search_term, 
-                self.words, 
-                scorer=scorer, 
-                limit=40,
-                score_cutoff=50 if len(search_term) > 2 else 30
-            )
+            limit = 40
+            exact = []
+            starts = []
+            contains = []
+            seen = set()
+
+            # Tier 1 & 2 & 3: Basic string matching (extremely fast)
+            for w in self.words:
+                if w == search_term:
+                    exact.append(w)
+                    seen.add(w)
+                elif w.startswith(search_term):
+                    starts.append(w)
+                    seen.add(w)
+                elif search_term in w:
+                    contains.append(w)
+                    seen.add(w)
+
+            # Sort prefix and contains matches by length so shorter words appear first
+            starts.sort(key=lambda x: (len(x), x))
+            contains.sort(key=lambda x: (len(x), x))
+
+            combined = exact + starts + contains
+            matches = combined[:limit]
+
+            # Tier 4: Fallback to fuzzy search if we need more results (typographic errors)
+            if len(matches) < limit:
+                fuzzy_matches = process.extract(
+                    search_term, 
+                    self.words, 
+                    scorer=fuzz.WRatio, 
+                    limit=limit, 
+                    score_cutoff=75
+                )
+                for fw, score, idx in fuzzy_matches:
+                    if fw not in seen:
+                        matches.append(fw)
+                        seen.add(fw)
+                        if len(matches) >= limit:
+                            break
+
             self._search_cache[search_term] = matches
-            # Simple cache eviction
             if len(self._search_cache) > 200:
                 self._search_cache.clear()
         
@@ -148,7 +174,7 @@ class DictionaryTUI(App):
     def _update_word_list(self, matches: list) -> None:
         option_list = self.query_one(OptionList)
         option_list.clear_options()
-        for word, score, idx in matches:
+        for word in matches:
             option_list.add_option(word)
 
     async def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:

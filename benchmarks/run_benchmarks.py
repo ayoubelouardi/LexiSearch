@@ -46,17 +46,53 @@ def run_suite():
     results["index_ms"] = benchmark("Load Index", load_index, iterations=10)
     words = load_index() # load once for the subsequent search tests
     
+    # Reusable hybrid search logic for benchmarks
+    def hybrid_search(search_term, words, limit=40):
+        exact = []
+        starts = []
+        contains = []
+        seen = set()
+
+        for w in words:
+            if w == search_term:
+                exact.append(w)
+                seen.add(w)
+            elif w.startswith(search_term):
+                starts.append(w)
+                seen.add(w)
+            elif search_term in w:
+                contains.append(w)
+                seen.add(w)
+
+        starts.sort(key=lambda x: (len(x), x))
+        contains.sort(key=lambda x: (len(x), x))
+
+        combined = exact + starts + contains
+        matches = combined[:limit]
+
+        if len(matches) < limit:
+            fuzzy_matches = process.extract(
+                search_term, words, scorer=fuzz.WRatio, limit=limit, score_cutoff=75
+            )
+            for fw, score, idx in fuzzy_matches:
+                if fw not in seen:
+                    matches.append(fw)
+                    seen.add(fw)
+                    if len(matches) >= limit:
+                        break
+        return matches
+
     # 2. Short Query Benchmark
     short_q = "wo"
     def short_search():
-        process.extract(short_q, words, scorer=fuzz.QRatio, limit=40, score_cutoff=30)
+        hybrid_search(short_q, words)
         
     results["short_ms"] = benchmark("Short Search", short_search, iterations=50)
 
     # 3. Long Query Benchmark
     long_q = "dictionary"
     def long_search():
-        process.extract(long_q, words, scorer=fuzz.WRatio, limit=40, score_cutoff=50)
+        hybrid_search(long_q, words)
         
     results["long_ms"] = benchmark("Long Search", long_search, iterations=50)
     
@@ -84,8 +120,8 @@ def generate_report(results, version=None, num_runs=1):
     md_report += "| Operation | Average Time (ms) | Iterations per Run |\n"
     md_report += "|---|---|---|\n"
     md_report += f"| Load 111k+ Index (SQLite) | {results['index_ms']:.2f} ms | 10 |\n"
-    md_report += f"| Short Query ('wo', QRatio) | {results['short_ms']:.2f} ms | 50 |\n"
-    md_report += f"| Long Query ('dictionary', WRatio) | {results['long_ms']:.2f} ms | 50 |\n"
+    md_report += f"| Short Query ('wo', Hybrid) | {results['short_ms']:.2f} ms | 50 |\n"
+    md_report += f"| Long Query ('dictionary', Hybrid) | {results['long_ms']:.2f} ms | 50 |\n"
     md_report += f"| Fetch Definition (SQLite) | {results['db_ms']:.2f} ms | 100 |\n\n"
     
     md_report += "*(Lower is better.)*\n"
