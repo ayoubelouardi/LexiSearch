@@ -4,14 +4,14 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from rapidfuzz import fuzz, process
 from textual import events, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Input, Markdown, OptionList, Static
 
 # Database configuration: handle PyInstaller path if frozen
@@ -51,15 +51,17 @@ class HelpScreen(ModalScreen):
         help_markdown = """
 # LexiSearch Shortcuts
 
-| Key(s) | Action | Mode |
-|---|---|---|
-| `/` | Focus Search Bar | Any |
-| `Escape` | Unfocus Search (Enter Normal Mode) | Any |
-| `Ctrl+Backspace` | Clear Search Bar | Any |
-| `Enter` | Select First Word | Search Focused |
-| `?` | Toggle Help | Normal |
-| `q` | Quit Application | Normal |
-| `Ctrl+c` | Quit Application | Any |
+## Core Shortcuts
+
+| Key(s) | Action |
+|---|---|
+| `/` | Focus Search Bar |
+| `Escape` | Unfocus Search (Enter Normal Mode) |
+| `Ctrl+Backspace` | Clear Search Bar |
+| `Enter` | Select First Word (Search Focused) |
+| `?` | Toggle Help |
+| `q` | Quit Application (Normal Mode) |
+| `Ctrl+c` | Quit Application (Anywhere) |
 
 ## Normal Mode Navigation (Vim Style)
 *(Press `Escape` to enter Normal Mode)*
@@ -140,17 +142,26 @@ class DictionaryTUI(App):
         Binding("escape", "unfocus_search", "Normal Mode", show=True),
         Binding("/", "focus_search", "Search"),
         Binding(
-            "ctrl+h", "clear_search", "Clear"
-        ),  # Ctrl+Backspace maps to ctrl+h in many terminals
+            "ctrl+backspace", "clear_search", "Clear", key_display="Ctrl+Backspace"
+        ),
         Binding("?", "show_help", "Help"),
     ]
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
         self.words: List[str] = []
-        self.db_conn = None
+        self.db_conn: Optional[sqlite3.Connection] = None
         self._search_cache: Dict[str, list] = {}
-        self._last_g_press = 0
+        self._last_g_press: float = 0
+        self.current_word: Optional[str] = None
+        self.current_results: Optional[List[tuple]] = None
+        self._last_selected_text: Optional[str] = None
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        """Override command palette to remove the Maximize and Keys options."""
+        for command in super().get_system_commands(screen):
+            if command.title not in ("Maximize", "Keys"):
+                yield command
 
     def on_mount(self) -> None:
         """Initialize database connection and load word list."""
@@ -261,6 +272,34 @@ class DictionaryTUI(App):
             else:
                 self._last_g_press = current_time
 
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Capture selection on right click before it clears."""
+        if event.button == 3:
+            # Capture the current selection before Screen resets it
+            self._last_selected_text = self.screen.get_selected_text()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        """Handle right-click to copy text to clipboard."""
+        if event.button == 3:  # 3 is the Right Mouse Button
+            # Use the captured selection, or check again just in case
+            selected_text = self._last_selected_text or self.screen.get_selected_text()
+
+            # 1. If text is highlighted manually, copy exactly that
+            if selected_text:
+                self.copy_to_clipboard(selected_text)
+                self.notify("Copied selection to clipboard")
+
+            # 2. If no text is highlighted, copy the entire plain-text definition
+            elif self.current_word and self.current_results:
+                clean_content = f"{self.current_word.title()}\n\n"
+                for i, (_w, t, d) in enumerate(self.current_results, 1):
+                    clean_content += f"{i}. {t} {d}\n\n"
+                self.copy_to_clipboard(clean_content.strip())
+                self.notify("Copied full definition to clipboard")
+
+            # Reset the cache
+            self._last_selected_text = None
+
     @work(exclusive=True, thread=True)
     async def perform_fuzzy_search(self, search_term: str) -> None:
         """Perform a tiered hybrid search for optimal relevance and speed."""
@@ -347,6 +386,8 @@ class DictionaryTUI(App):
         results = cursor.fetchall()
 
         if results:
+            self.current_word = word
+            self.current_results = results
             content = f"[b underline $accent]{word.upper()}[/]\n\n"
             for i, (_w, t, d) in enumerate(results, 1):
                 content += f"[b]{i}.[/] [i $secondary]{t}[/] {d}\n\n"
@@ -355,6 +396,8 @@ class DictionaryTUI(App):
                 self.query_one("#definition_panel", Static).update, content
             )
         else:
+            self.current_word = None
+            self.current_results = None
             self.app.call_from_thread(
                 self.query_one("#definition_panel", Static).update,
                 "Definition not found.",
